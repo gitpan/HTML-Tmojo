@@ -1,4 +1,67 @@
 ---
+version: 0.300
+date:    Mar 22, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- Tmojo has has a serious syntax facelift. Now,
+	you say <: METHOD foo :> instead of <:method foo>.
+	Likewise, you say <: /METHOD :> instead of
+	</:method>.
+	
+	This is true of all of the tags. Now, to make things
+	cool, <: $x :> is shorthand for <: MERGE $x :>. Also,
+	lines that start with ':', like this:
+	
+		: my $x = 5;
+	
+	Are shorthand for <: PERL my $x = 5; :>.
+	
+	- The escape section has been removed in favor of
+	the TAG_STYLE tag, which allows you to change
+	the tag start and stop and the line tag markers.
+	
+	- PERL sections no longer have terminators. Instead,
+	if a PERL tag has content, that content is considered
+	the PERL to be executed... so this:
+	
+		<: PERL
+			my $x = 5;
+		:>
+	
+	Is the same as:
+	
+		<: PERL :>
+			my $x = 5;
+		<: /PERL :>
+	
+	Anything that looks like a Tmojo tag within a PERL
+	section causes a compile-time error. You can use
+	the TAG_STYLE mechanism to overcome this limitation.
+	
+	This was done because it would have been possible
+	to have accidental run-away PERL sections... now
+	the compiler will complain and tell you exactly where
+	your mistake was.
+	
+	- Precise whitespace controls have been added. Now,
+	you can use '-' or '--' or '+' at the beginning
+	or end of your tags to control the whitespace surrounding
+	them. Read the docs for more details on how this works.
+	
+	- Tmojo lite has the same method syntax as Tmojo proper.
+	
+	- added hash lookups to Tmojo lite using a '.'
+	syntax, like this <: $users.first_name :>
+	
+	- fixed warning caused by TemplateLoader.pm
+	
+	- changed the SimpleHandler to not use PATH_INFO. If
+	you've ever run into horrible problems with PATH_INFO,
+	e-mail me, and I'll explain why it isn't working, and
+	why you shouldn't use it ;)
+
+---
 version: 0.262
 date:    Mar 18, 2004
 author:  Will Conant <will@lab-01.com>

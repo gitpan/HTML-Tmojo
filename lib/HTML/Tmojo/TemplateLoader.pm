@@ -50,7 +50,7 @@ sub load_template {
 	
 	if ($source_time_stamp > $cache_time_stamp) {
 		# LOAD AND RETURN THE FILE
-		open my $fh, $file_name;
+		open my ($fh), $file_name;
 		local $/ = "\n"; # THIS CAN GET EXTRA SCREWED UP IN MOD_PERL
 		my @template_lines = <$fh>;
 		close $fh;

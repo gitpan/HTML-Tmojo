@@ -18,7 +18,7 @@
 
 package HTML::Tmojo;
 
-our $VERSION = '0.262';
+our $VERSION = '0.300';
 
 =head1 NAME
 
@@ -38,11 +38,11 @@ HTML::Tmojo - Dynamic Text Generation Engine
 
 =head1 ABSTRACT
 
-  Tmojo is used for generating dynamic text documents.
-  While it is particularly suited to generating HTML
-  and XML documents, it can be used effectively to
-  produce any text output, including dynamically
-  generated source code.
+Tmojo is used for generating dynamic text documents.
+While it is particularly suited to generating HTML
+and XML documents, it can be used effectively to
+produce any text output, including dynamically
+generated source code.
 
 =head1 AUTHOR
 
@@ -118,12 +118,12 @@ sub call_with_container {
 				$container_id = ${$current_package . '::TMOJO_CONTAINER'};
 			}
 			
-			if ($container_id ne '') {
+			if (defined $container_id) {
 				# NORMALIZE THE CONTAINER ID FOR GOOD MEASURE
 				$container_id = $contextual_tmojo->normalize_template_id($container_id);
 				
 				# CHECK TO MAKE SURE THAT THE CONTAINER HASN'T ALREADY BEEN USED
-				if ($used_containers{$container_id} == 1) {
+				if (defined $used_containers{$container_id}) {
 					die "circular container reference, $container_id already used (this will cause an infinite loop)";
 				}
 				
@@ -197,109 +197,613 @@ sub report_error {
 	die $error;
 }
 
-sub compile_template {
-	my ($source_lines, $template_id, $package_name) = @_;
+sub parse_template {
+	my ($source) = @_;
 	
-	# NOW WE TURN THE TEMPLATE SRC INTO PERL ;)
+	my @parsed;
 	
-	# FIRST, WE BREAK IT UP INTO SECTIONS
-	my %sections;
-	my $cur_section = 'sub:main';
-	my $line_number = 0;
+	my $tag_open  = "<:";
+	my $tag_close = ":>";
+	my $tag_line  = ":";
 	
-	my $perl_section = 0;
-	my $perl_terminator;
-	my $escape_section = 0;
-	my $escape_terminator;
+	my $tag_open_r;
+	my $tag_close_r;
+	my $tag_line_r;
 	
-	foreach my $line (@$source_lines) {
-		$line_number += 1;
+	my $make_regexes = sub {
+		$tag_open_r  = $tag_open;
+		$tag_close_r = $tag_close;
+		$tag_line_r  = $tag_line;
 		
-		if ($perl_section == 1) {
-			if ($line =~ /^\s*<\/:perl$perl_terminator>\s*$/) {
-				$perl_section = 0;
-				$perl_terminator = undef;
+		$tag_open_r  =~ s/([\[\]\{\}\(\)\$\@\^\\\|\?\*\+])/\\$1/g;
+		$tag_close_r =~ s/([\[\]\{\}\(\)\$\@\^\\\|\?\*\+])/\\$1/g;
+		$tag_line_r  =~ s/([\[\]\{\}\(\)\$\@\^\\\|\?\*\+])/\\$1/g;
+	};
+	
+	my $count_newlines = sub {
+		my $count = 0;
+		my $pos   = 0;
+		
+		while ($pos > -1) {
+			$pos = index($_[0], "\n", $pos);
+			if ($pos > -1) {
+				$pos += 1;
+				$count += 1;
 			}
-			
-			$sections{$cur_section} .= "$line_number:$line";
 		}
-		elsif ($escape_section == 1) {
-			if ($line =~ /^\s*<\/:escape$escape_terminator>\s*$/) {
-				$escape_section = 0;
-				$escape_terminator = undef;
+		
+		return $count;
+	};
+	
+	$make_regexes->();
+	
+	my $keywords = "GLOBAL|INIT|METHOD|PERL|MERGE|CAPTURE|FILTER|REGEX|NOP|TAG_STYLE";
+	my %crush_defaults = (
+		'GLOBAL'    => [0, 0],
+		'/GLOBAL'   => [0, 2],
+		
+		'INIT'      => [0, 0],
+		'/INIT'     => [0, 2],
+		
+		'METHOD'    => [0, 2],
+		'/METHOD'   => [2, 2],
+		
+		'PERL'      => [1, 0],
+		'/PERL'     => [0, 0],
+		
+		'MERGE'     => [0, 0],
+		
+		'CAPTURE'   => [1, 2],
+		'/CAPTURE'  => [2, 0],
+		
+		'FILTER'    => [0, 0],
+		'/FILTER'   => [0, 0],
+		
+		'REGEX'     => [0, 0],
+		'/REGEX'    => [0, 0],
+		
+		'TAG_STYLE' => [1, 0],
+		
+		'NOP'       => [0, 0],
+	);
+	
+	my $current_line = 1;
+
+	while ($source ne '') {
+	
+		# SNAG THE NEXT TAG
+		# -------------------
+		
+		my $found_tag = 0;
+		my $tag_notation;
+		my $pre_tag_text;
+
+		if (scalar(@parsed) == 0) {
+			if ($source =~ s/^([ \t]*)$tag_line_r//s) {
+				$found_tag = 1;
+				$tag_notation = 'line';
+				$pre_tag_text = $1;
 			}
-			
-			$sections{$cur_section} .= "$line_number:$line";
 		}
-		else {
-			if ($cur_section =~ /^sub:/ and $line =~ /^\s*<:perl(-.+)?>\s*$/) {
-				$perl_section = 1;
-				$perl_terminator = $1;
-				$sections{$cur_section} .= "$line_number:$line";
-			}
-			elsif ($cur_section =~ /^sub:/ and $line =~ /^\s*<:escape(-.+)?>\s*$/) {
-				$escape_section = 1;
-				$escape_terminator = $1;
-				$sections{$cur_section} .= "$line_number:$line";
-			}
-			elsif ($line =~ /^\s*<:(global|init)>\s*$/) {
-				$cur_section = $1;
-			}
-			elsif ($line =~ /^\s*<\/:(global|init)>\s*$/) {
-				if ($cur_section ne $1) {
-					die "didn't expect </:$1> on line $line_number";
+		
+		unless ($found_tag == 1) {
+			if ($source =~ s/^(.*?)($tag_open_r|(\n[ \t]*)$tag_line_r)//s) {
+				$found_tag = 1;
+				
+				# DETERMINE IF THIS IS A LINE OR INLINE TAG
+				if ($2 eq $tag_open) {
+					$tag_notation = 'inline';
 				}
 				else {
-					$cur_section = 'sub:main';
-				}
-			}
-			elsif ($line =~ /^\s*<:(?:sub|method)\s+(\w+)>\s*$/) {
-				if ($1 eq 'main') {
-					die "illegal method name 'main' on line $line_number";
-				}
-				if (defined $sections{"sub:$1"}) {
-					die "attempting to redefine method $1";
+					$tag_notation = 'line';
 				}
 				
-				$cur_section = "sub:$1";
-			}
-			elsif ($line =~ /^\s*<\/:(sub|method)>\s*$/) {
-				if ($cur_section !~ /^sub:/) {
-					die "didn't expect </:$1> on line $line_number";
-				}
-				else {
-					$cur_section = 'sub:main';
-				}
-			}
-			elsif ($line =~ /^\s*<\/:perl(-.+)?>\s*$/) {
-				die "unexpected </:perl>";
-			}
-			elsif ($line =~ /^\s*<\/:escape(-.+)?>\s*$/) {
-				die "unexpected </:escape>";
-			}
-			else {
-				if ($cur_section eq 'global' or $cur_section eq 'init') {
-					chomp $line;
-					$sections{$cur_section} .= "$line###TMOJO_LINE: $line_number\n";
-				}
-				else {
-					$sections{$cur_section} .= "$line_number:$line";
+				# DETERMINE THE PRE TAG TEXT
+				$pre_tag_text = $1;
+				if ($tag_notation eq 'line') {
+					$pre_tag_text .= $3;
 				}
 			}
 		}
+		
+		if ($found_tag == 1) {
+				
+			if ($pre_tag_text ne '') {
+				# PUSH PLAIN TEXT ONTO THE PARSED RESULT
+				push @parsed, { type => 'TEXT', text => $pre_tag_text, source => $pre_tag_text, crush_before => 0, crush_after => 0, start_line => $current_line };
+				
+				# COUNT THE NUMBER OF NEWLINES
+				$current_line += $count_newlines->($pre_tag_text);
+			}
+			
+			# GRAB THE REST OF THE TAG
+			my $tag_source;
+			my $tag_inside;
+			
+			if ($tag_notation eq 'inline') {
+				$tag_source = $tag_line;
+				
+				if ($source =~ s/^(.*?)$tag_close_r//s) {
+					$tag_inside = $1;
+					$tag_source .= "$1$tag_close";
+				}
+				else {
+					die "expected '$tag_close'";
+				}
+			}
+			else {
+				$tag_source = $tag_open;
+				
+				# GOBBLE UP THE REST OF THE LINE
+				$source =~ s/^([^\n]*)//;
+				$tag_inside = $1;
+				$tag_source .= $1;
+			}
+			
+			# NOTCH UP THE LINES
+			$current_line += $count_newlines->($tag_source);
+			
+			# PARSE THE TAG INSIDES
+			
+			my %tag = (
+				source       => $tag_source,
+				start_line   => $current_line,
+			);
+			
+			# LOOK FOR WHITESPACE CRUSHERS
+			
+			if ($tag_notation eq 'inline') {
+				if ($tag_inside =~ s/^--//) {
+					$tag{crush_before} = 2;
+				}
+				elsif ($tag_inside =~ s/^-//) {
+					$tag{crush_before} = 1;
+				}
+				elsif ($tag_inside =~ s/^\+//) {
+					$tag{crush_before} = 0;
+				}
+				
+				if ($tag_inside =~ s/--$//) {
+					$tag{crush_after} = 2;
+				}
+				elsif ($tag_inside =~ s/-$//) {
+					$tag{crush_after} = 1;
+				}
+				elsif ($tag_inside =~ s/\+$//) {
+					$tag{crush_after} = 0;
+				}
+			}
+			
+			# FIGURE OUT THE TAG TYPE
+			
+			if ($tag_inside =~ /^\s*$/) {
+				$tag{type} = 'NOP';
+			}
+			elsif ($tag_inside =~ s/^\s*(\/?(?:$keywords))\s+//) {
+				$tag{type} = $1;
+			}
+			elsif ($tag_notation eq 'inline') {
+				# USE A LITTLE MAGIC TO SEE IF WE'VE GOT A STATEMENT OR AN EXPRESSION
+				if ($tag_inside =~ /^\s*(if|unless|while|until|for|foreach)\s+/) {
+					 # THIS LOOKS LIKE A PERL STATEMENT
+					 $tag{type} = 'PERL';
+				}
+				elsif ($tag_inside =~ /^\s*\}?\s*(else|elsif|continue)\s+/) {
+					# THIS LOOKS LIKE A PERL STATEMENT
+					$tag{type} = 'PERL';
+				}
+				elsif ($tag_inside =~ /^\s*\}\s*$/) {
+					# THIS LOOKS LIKE A PERL STATEMENT
+					$tag{type} = 'PERL';
+				}
+				else {
+					# MUST BE A PERL EXPRESSION
+					$tag{type} = 'MERGE';
+				}
+			}
+			else {
+				$tag{type} = 'PERL';
+			}
+			
+			# PUT WHAT'S LEFT IN THE TAG TEXT
+			
+			$tag_inside =~ s/(^\s+|\s+$)//g;
+			$tag{text} = $tag_inside;
+			
+			# SET DEFAULT CRUSHING
+			
+			if (not defined $tag{crush_before}) {
+				$tag{crush_before} = $crush_defaults{$tag{type}}[0];
+			}
+			
+			if (not defined $tag{crush_after}) {
+				$tag{crush_after} = $crush_defaults{$tag{type}}[1];
+			}
+			
+			
+			# HANDLE FIRST-PASS TAGS
+			# ----------------------
+			if ($tag{type} eq 'TAG_STYLE') {
+				if ($tag{text} eq 'default') {
+					($tag_open, $tag_close, $tag_line) = ('<:', ':>', ':');
+				}
+				else {
+					($tag_open, $tag_close, $tag_line) = split /\s+/, $tag{text};
+				}
+				
+				if ($tag_open eq '') {
+					die "invalid open tag marker";
+				}
+				
+				if ($tag_close eq '') {
+					die "invalid close tag marker";
+				}
+				
+				if ($tag_line eq '') {
+					die "invalid line tag marker";
+				}
+				
+				if ($tag_line eq $tag_open or $tag_line eq $tag_close) {
+					die "line tag marker must not be the same as either the open tag marker or close tag marker";
+				}
+				
+				$make_regexes->();
+			}
+			
+			# PUSH THE TAG ONTO THE RESULT
+			
+			push @parsed, \%tag;
+		}
+		elsif ($source ne '') {
+			push @parsed, { type => 'TEXT', text => $source, source => $source, crush_before => 0, crush_after => 0, start_line => $current_line };
+			$source = '';
+		}
 	}
 	
-	if ($cur_section eq 'init') {
-		die "missing </:init>";
-	}
-	elsif ($cur_section eq 'global') {
-		die "missing </:global>";
-	}
-	elsif ($cur_section ne 'sub:main') {
-		die "missing </:method>";
+	# RUN THROUGH AGAIN AND CRUSH WHITESPACE
+	for (my $i = 0; $i < scalar(@parsed); $i++) {
+		if ($parsed[$i]{crush_before} == 1 and $i > 0 and $parsed[$i-1]{type} eq 'TEXT') {
+			$parsed[$i-1]{text} =~ s/\n?[ \t]*$//;
+		}
+		elsif ($parsed[$i]{crush_before} == 2 and $i > 0 and $parsed[$i-1]{type} eq 'TEXT') {
+			$parsed[$i-1]{text} =~ s/\s+$//;
+		}
+		
+		if ($parsed[$i]{crush_after} == 1 and $i < (scalar(@parsed)-1) and $parsed[$i+1]{type} eq 'TEXT') {
+			$parsed[$i+1]{text} =~ s/^[ \t]*\n?//;
+		}
+		elsif ($parsed[$i]{crush_after} == 2 and $i < (scalar(@parsed)-1) and $parsed[$i+1]{type} eq 'TEXT') {
+			$parsed[$i+1]{text} =~ s/^\s+//;
+		}
 	}
 	
-	# PARSE EACH SECTION IN ORDER
+	# AND WE'RE DONE
+	return \@parsed;
+}
+
+sub compile_template {
+	my ($source, $template_id, $package_name) = @_;
+	
+	# ADJUST FOR SOURCE LINES
+	if (ref($source) eq 'ARRAY') {
+		$source = join "", @$source;
+	}
+	
+	# PARSE THE SOURCE INTO TAGS
+	my $tags = parse_template($source);
+	
+	# INITIALIZE OUR PARSE VARIABLES
+	my $global_section = '';
+	my $init_section   = '';
+	
+	my %methods = (
+		main => '',
+	);
+	
+	my $cur_method = 'main';
+	
+	my @stack;
+	my @stack_details;
+	my @stack_lines;
+	
+	# DEFINE A USEFUL LITTLE FUNCTION
+	my $format_perl = sub {
+		my ($source, $start_line) = @_;
+		
+		my @lines = split /\n/, $source;
+		
+		my $result;
+		my $cur_line = $start_line;
+		foreach my $line (@lines) {
+			$result .= "$line###TMOJO_LINE: $cur_line\n";
+			$cur_line += 1;
+		}
+		
+		return $result;
+	};
+	
+	# PARSE ALL OF THE TAGS
+	while (my $tag = shift @$tags) {
+	
+		# TEXT TAG
+		# ---------------------------------
+	
+		if ($tag->{type} eq 'TEXT') {
+			my $dumper = Data::Dumper->new([$tag->{text}]);
+			$dumper->Useqq(1);
+			$dumper->Indent(0);
+			$dumper->Terse(1);
+			my $literal = $dumper->Dump();
+			
+			$methods{$cur_method} .= "\t\$Result .= $literal;\n";
+		}
+		
+		# GLOBAL TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'GLOBAL') {
+			
+			if ($cur_method ne 'main') {
+				die "cannot declare METHOD here";
+			}
+			
+			if ($global_section ne '') {
+				die "attempting to redefine GLOBAL section";
+			}
+			
+			my $source = '';
+			my $start_line;
+			
+			while (my $tag = shift @$tags) {
+				if (not defined $tag) {
+					die "missing /GLOBAL tag";
+				}
+				
+				if ($tag->{type} eq '/GLOBAL') {
+					last;
+				}
+				elsif ($tag->{type} ne 'TEXT') {
+					die "non-text tag in GLOBAL section in '$template_id' starting at line $tag->{start_line}";
+				}
+				else {
+					if (not defined $start_line) {
+						$start_line = $tag->{start_line};
+					}
+					$source .= $tag->{source};
+				}
+			}
+			
+			$global_section .= $format_perl->($source, $start_line);
+		}
+		
+		# INIT TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'INIT') {
+			
+			if ($cur_method ne 'main') {
+				die "cannot declare METHOD here";
+			}
+			
+			if ($init_section ne '') {
+				die "attempting to redefine INIT section";
+			}
+			
+			my $source = '';
+			my $start_line;
+			
+			while (my $tag = shift @$tags) {
+				if (not defined $tag) {
+					die "missing /INIT tag";
+				}
+				
+				if ($tag->{type} eq '/INIT') {
+					last;
+				}
+				elsif ($tag->{type} ne 'TEXT') {
+					die "non-text tag in INIT section in '$template_id' starting at line $tag->{start_line}";
+				}
+				else {
+					if (not defined $start_line) {
+						$start_line = $tag->{start_line};
+					}
+					$source .= $tag->{source};
+				}
+			}
+			
+			$init_section .= $format_perl->($source, $start_line);
+		}
+		
+		# PERL TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'PERL') {
+			
+			if ($tag->{text} ne '') {
+				my @lines = split /\n/, $tag->{text};
+			
+				my $cur_line = $tag->{start_line};
+				while ($_ = shift @lines) {
+					$methods{$cur_method} .= "$_###TMOJO_LINE: $cur_line\n";				
+					$cur_line += 1;
+				}
+			}
+			else {
+				my $source = '';
+				my $start_line;
+				
+				while (my $tag = shift @$tags) {
+					if (not defined $tag) {
+						die "missing /PERL tag";
+					}
+					
+					if ($tag->{type} eq '/PERL') {
+						last;
+					}
+					elsif ($tag->{type} ne 'TEXT') {
+						die "non-text tag in PERL section in '$template_id' starting at line $tag->{start_line}";
+					}
+					else {
+						if (not defined $start_line) {
+							$start_line = $tag->{start_line};
+						}
+						$source .= $tag->{source};
+					}
+				}
+				
+				$methods{$cur_method} .= $format_perl->($source, $start_line);
+			}
+		}
+		
+		# METHOD TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'METHOD') {
+			
+			if ($cur_method ne 'main') {
+				die "cannot declare METHOD here";
+			}
+			
+			$cur_method = $tag->{text};
+			if ($cur_method !~ /^[a-zA-Z]\w*$/) {
+				die "illegal method name $cur_method";
+			}
+			
+			if (defined $methods{$cur_method}) {
+				die "attempting to redefine METHOD $cur_method";
+			}
+		}
+		
+		# /METHOD TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq '/METHOD') {
+			
+			if ($cur_method eq 'main') {
+				die "cannot end METHOD here";
+			}
+			
+			$cur_method = 'main';
+		}
+		
+		# MERGE TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'MERGE') {
+			
+			# FORMAT THE PERL
+			$methods{$cur_method} .= "\t\$Result .= (";
+			
+			my @lines = split /\n/, $tag->{text};
+			
+			my $cur_line = $tag->{start_line};
+			while ($_ = shift @lines) {
+				$methods{$cur_method} .= $_;
+				if (@lines) {
+					$methods{$cur_method} .= "###TMOJO_LINE: $cur_line\n";
+				}
+				else {
+					$methods{$cur_method} .= "); ###TMOJO_LINE: $cur_line\n";
+				}
+				
+				$cur_line += 1;
+			}
+		}
+		
+		# CAPTURE TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'CAPTURE') {
+			
+			push @stack, 'CAPTURE';
+			push @stack_details, $tag->{text};
+			push @stack_lines, $tag->{start_line};
+			
+			$methods{$cur_method} .= "\tpush(\@ResultStack, ''); local \*Result = \\\$ResultStack[-1];\n";
+		}
+		
+		# /CAPTURE TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq '/CAPTURE') {
+			
+			if (pop(@stack) ne 'CAPTURE') {
+				die "unexpected /CAPTURE tag>";
+			}
+			
+			my $capture_lvalue = pop @stack_details;
+			my $capture_line = pop @stack_lines;
+			
+			$methods{$cur_method} .= "\t$capture_lvalue = pop(\@ResultStack); local \*Result = \\\$ResultStack[-1];###TMOJO_LINE: $capture_line\n";
+		}
+		
+		# FILTER TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'FILTER') {
+			
+			push @stack, 'FILTER';
+			push @stack_details, $tag->{text};
+			push @stack_lines, $tag->{start_line};
+			
+			$methods{$cur_method} .= "\tpush(\@ResultStack, ''); local \*Result = \\\$ResultStack[-1];\n";
+		}
+		
+		# /FILTER TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq '/FILTER') {
+			
+			if (pop(@stack) ne 'FILTER') {
+				die "unexpected /FILTER tag>";
+			}
+			
+			my $filter_code = pop @stack_details;
+			my $filter_line = pop @stack_lines;
+			
+			$methods{$cur_method} .= "\t\$ResultStack[-2] .= ($filter_code); pop(\@ResultStack); local \*Result = \\\$ResultStack[-1];###TMOJO_LINE: $filter_line\n";
+		}
+		
+		# REGEX TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'REGEX') {
+			
+			push @stack, 'REGEX';
+			push @stack_details, $tag->{text};
+			push @stack_lines, $tag->{start_line};
+			
+			$methods{$cur_method} .= "\tpush(\@ResultStack, ''); local \*Result = \\\$ResultStack[-1];\n";
+		}
+		
+		# /REGEX TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq '/REGEX') {
+			
+			if (pop(@stack) ne 'REGEX') {
+				die "unexpected /REGEX tag>";
+			}
+			
+			my $regex = pop @stack_details;
+			my $regex_line = pop @stack_lines;
+			
+			$methods{$cur_method} .= "\t\$Result =~ $regex; \$ResultStack[-2] .= \$Result; pop(\@ResultStack); local \*Result = \\\$ResultStack[-1];###TMOJO_LINE: $regex_line\n";
+		}
+	}
+	
+	# MAKE SURE OUR MODE IS COOL
+	if ($cur_method ne 'main') {
+		die "expected /METHOD tag";
+	}
+	
+	if (@stack) {
+		die "expected /$stack[-1] tag";
+	}
+	
+	# NOW, WE CONSTRUCT THE ENTIRE PACKAGE
+	# --------------------------------------
+	
 	my $template_compiled = qq{###TMOJO_TEMPLATE_ID: $template_id
 package $package_name;
 
@@ -307,257 +811,151 @@ use strict;
 
 our \$Tmojo;
 
-$sections{global}
+$global_section
 
 sub new {					
-my \$Self = {
-	args    => \$_[1],
-	next    => \$_[2],
-	vars    => {},
-};
-
-bless \$Self, \$_[0];
-
-# DEFINE THE IMPLICIT VARIABLES
-my \$Next  = \$Self->{next};
-our \%Args; local \*Args = \$Self->{args};
-our \%Vars; local \*Vars = \$Self->{vars};
-
-# --- BEGIN USER CODE ---
-$sections{init}
-# --- END USER CODE ---
-
-# RETURN THE VALUE
-return \$Self;
+	my \$Self = {
+		args    => \$_[1],
+		next    => \$_[2],
+		vars    => {},
+	};
+	
+	bless \$Self, \$_[0];
+	
+	# DEFINE THE IMPLICIT VARIABLES
+	my \$Next  = \$Self->{next};
+	our \%Args; local \*Args = \$Self->{args};
+	our \%Vars; local \*Vars = \$Self->{vars};
+	
+	# --- BEGIN USER CODE ---
+$init_section
+	# --- END USER CODE ---
+	
+	# RETURN THE VALUE
+	return \$Self;
 }
 	};
-			
-	foreach my $section (keys %sections) {
-		if ($section =~ /^sub:(\w+)$/) {
-			
-			my $sub_name = $1;
-							
-			# SPLIT INTO LINES
-			my @lines = split /\n/, $sections{$section};
-			
-			# GET RID OF ANY TRAILING LINES THAT ARE ALL WHITESPACE
-			while ($lines[-1] =~ /^\d+:\s*$/) {
-				pop @lines;
-			}
-			
-			my $section_src;
-			my $stripped_beginning = 0;
-			my $perl_section = 0;
-			my $perl_terminator;
-			my $escape_section = 0;
-			my $escape_terminator;
-			my @capture_stack;
-			my @capture_lines;
-			my @filter_stack;
-			my @filter_lines;
-			
-			while (my $line = shift @lines) {
-				$line =~ s/^(\d+)://;
-				my $line_number = $1;
-				
-				if (@lines) {
-					$line .= "\n";
-				}
-				
-				if ($perl_section == 1) {
-					if ($line =~ /^\s*<\/:perl$perl_terminator>\s*$/) {
-						$perl_section = 0;
-						$perl_terminator = undef;
-						$section_src .= "\t# --- END USER <:perl> SECTION ---\n";
-					}
-					else {
-						chomp $line;
-						$section_src .= "$line###TMOJO_LINE: $line_number\n";
-					}
-				}
-				elsif ($escape_section == 1) {
-					if ($line =~ /^\s*<\/:escape$escape_terminator>\s*$/) {
-						$escape_section = 0;
-						$escape_terminator = undef;
-						$section_src .= "\t# --- END USER <:escape> SECTION ---\n";
-					}
-					else {
-						my $dumper = Data::Dumper->new([$line]);
-						$dumper->Useqq(1);
-						$dumper->Indent(0);
-						$dumper->Terse(1);
-						my $literal = $dumper->Dump();
-						$section_src .= "\t\$Result .= $literal;###TMOJO_LINE: $line_number\n";
-					}
-				}
-				else {
-					if ($line =~ /^\s*<:perl(-.+)?>\s*$/) {
-						$perl_section = 1;
-						$perl_terminator = $1;
-						$section_src .= "\t# --- BEGIN USER <:perl> SECTION ---\n";
-					}
-					elsif ($line =~ /^\s*<:escape(-.+)?>\s*$/) {
-						$escape_section = 1;
-						$escape_terminator = $1;
-						$section_src .= "\t# --- BEGIN USER <:escape> SECTION ---\n";
-					}
-					elsif ($line =~ /^\s*<:capture\s+(.+)>\s*$/) {
-						push @capture_stack, $1;
-						push @capture_lines, $line_number;
-						$section_src .= "\tpush(\@ResultStack, ''); local \*Result = \\\$ResultStack[-1];\n";
-					}
-					elsif ($line =~ /^\s*<\/:capture>\s*$/) {
-						if (not @capture_stack) {
-							die "unexpected </:capture>";
-						}
-						
-						my $capture_lvalue = pop @capture_stack;
-						my $capture_line = pop @capture_lines;
-						$section_src .= "\t$capture_lvalue = pop(\@ResultStack); local \*Result = \\\$ResultStack[-1];###TMOJO_LINE: $capture_line\n";
-					}
-					elsif ($line =~ /^\s*<:filter\s+(.+)>\s*$/) {
-						push @filter_stack, $1;
-						push @filter_lines, $line_number;
-						$section_src .= "\tpush(\@ResultStack, ''); local \*Result = \\\$ResultStack[-1];\n";
-					}
-					elsif ($line =~ /^\s*<\/:filter>\s*$/) {
-						if (not @filter_stack) {
-							die "unexpected </:filter>";
-						}
-						
-						my $filter_code = pop @filter_stack;
-						my $filter_line = pop @filter_lines;
-						$section_src .= "\t\$ResultStack[-2] .= ($filter_code); pop(\@ResultStack); local \*Result = \\\$ResultStack[-1];###TMOJO_LINE: $filter_line\n";
-					}
-					elsif ($line =~ /^(\s*): ?(.+)/) {
-						$section_src .= "$1$2###TMOJO_LINE: $line_number\n";
-					}
-					else {
-						unless ($stripped_beginning) {
-							$line =~ s/^\s+//;
-						}
-					
-						while ($line) {
-							$stripped_beginning = 1;
-						
-							if ($line =~ s/^(.*?)<://) {
-								my $dumper = Data::Dumper->new([$1]);
-								$dumper->Useqq(1);
-								$dumper->Indent(0);
-								$dumper->Terse(1);
-								my $literal = $dumper->Dump();
-								$section_src .= "\t\$Result .= $literal;###TMOJO_LINE: $line_number\n";
-								
-								if ($line =~ s/^(.*?):>//) {
-									$section_src .= "\t\$Result .= ($1);###TMOJO_LINE: $line_number\n";
-								}
-								else {
-									die "missing :> in $template_id on line $line_number";
-								}
-							}
-							else {
-								my $dumper = Data::Dumper->new([$line]);
-								$dumper->Useqq(1);
-								$dumper->Indent(0);
-								$dumper->Terse(1);
-								my $literal = $dumper->Dump();
-								$section_src .= "\t\$Result .= $literal;###TMOJO_LINE: $line_number\n";
-								
-								$line = '';
-							}
-						}
-					}
-				}
-			}
-			
-			# MAKE SURE WE DON'T HAVE ANY RUN-AWAY SECTIONS
-			if ($perl_section == 1) {
-				die "missing </:perl$perl_terminator>";
-			}
-			
-			if ($escape_section == 1) {
-				die "missing </:escape$escape_terminator>";
-			}
-			
-			if (@capture_stack) {
-				die "missing </:capture>";
-			}
-			
-			if (@filter_stack) {
-				die "missing </:filter>";
-			}
-			
-			# ADD THE FUNCTION TO THE PACKAGE
-			$template_compiled .= qq{
-sub $sub_name {
-my \$Self = shift \@_;
-
-# DEFINE THE IMPLICIT VARIABLES
-my \$Next  = \$Self->{next};
-our \%Args; local \*Args = \$Self->{args};
-our \%Vars; local \*Vars = \$Self->{vars};
-
-my \@ResultStack = ('');
-our \$Result; local \*Result = \\\$ResultStack[-1];
-
-
-# --- BEGIN USER CODE ---
-$section_src
-# --- END USER CODE ---
-
-return \$Result;
+	
+	foreach my $method (keys %methods) {
+		$template_compiled .= qq{
+sub $method {
+	my \$Self = shift \@_;
+	
+	# DEFINE THE IMPLICIT VARIABLES
+	my \$Next  = \$Self->{next};
+	our \%Args; local \*Args = \$Self->{args};
+	our \%Vars; local \*Vars = \$Self->{vars};
+	
+	my \@ResultStack = ('');
+	our \$Result; local \*Result = \\\$ResultStack[-1];
+	
+	
+	# --- BEGIN USER CODE ---
+$methods{$method}
+	# --- END USER CODE ---
+	
+	return \$Result;
 }
-			};
-		}
+		};
 	}
 	
-	# AND THE END
 	$template_compiled .= "\n1;\n";
 	
 	return $template_compiled;
 }
 
+
+
+
+
 sub compile_lite_template {
-	my ($source_lines, $template_id, $package_name) = @_;
+	my ($source, $template_id, $package_name) = @_;
 	
-	# NOW WE TURN THE TEMPLATE SRC INTO PERL ;)
-	
-	# FIRST, WE BREAK IT UP INTO SECTIONS
-	my %sections;
-	my $cur_section = 'main';
-	my $line_number = 0;
-		
-	foreach my $line (@$source_lines) {
-		$line_number += 1;
-		
-		if ($line =~ /^\s*<:(\w+)>\s*$/) {
-			if ($1 eq 'main') {
-				die "illegal section name 'main' on line $line_number";
-			}
-			if (defined $sections{$1}) {
-				die "attempting to redefine section $1";
-			}
-			
-			$cur_section = $1;
-		}
-		elsif ($line =~ /^\s*<\/:(\w+)>\s*$/) {
-			if ($cur_section ne $1) {
-				die "expected </:$cur_section>";
-			}
-			
-			$cur_section = 'main';
-		}
-		else {
-			$sections{$cur_section} .= "$line_number:$line";
-		}
-		
+	# ADJUST FOR SOURCE LINES
+	if (ref($source) eq 'ARRAY') {
+		$source = join "", @$source;
 	}
 	
-	if ($cur_section ne 'main') {
-		die "missing </:$cur_section>";
+	# PARSE THE SOURCE INTO TAGS
+	my $tags = parse_template($source);
+	
+	my %methods = (
+		main => '',
+	);
+	
+	my $cur_method = 'main';
+	
+	# PARSE ALL OF THE TAGS
+	while (my $tag = shift @$tags) {
+	
+		# TEXT TAG
+		# ---------------------------------
+	
+		if ($tag->{type} eq 'TEXT') {
+			my $dumper = Data::Dumper->new([$tag->{text}]);
+			$dumper->Useqq(1);
+			$dumper->Indent(0);
+			$dumper->Terse(1);
+			my $literal = $dumper->Dump();
+			
+			$methods{$cur_method} .= "\t\$Result .= $literal;\n";
+		}
+				
+		# METHOD TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'METHOD') {
+			
+			if ($cur_method ne 'main') {
+				die "cannot declare METHOD here";
+			}
+			
+			$cur_method = $tag->{text};
+			if ($cur_method !~ /^[a-zA-Z]\w*$/) {
+				die "illegal method name $cur_method";
+			}
+			
+			if ($methods{$cur_method} ne '') {
+				die "attempting to redefine METHOD $cur_method";
+			}
+		}
+		
+		# /METHOD TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq '/METHOD') {
+			
+			if ($cur_method eq 'main') {
+				die "cannot end METHOD here";
+			}
+			
+			$cur_method = 'main';
+		}
+				
+		# MERGE TAG
+		# ---------------------------------
+		
+		elsif ($tag->{type} eq 'MERGE') {
+			
+			if ($tag->{text} =~ /^\$([\w\.]+)$/) {
+				my $lookup = $1;
+				$lookup =~ s/\.(\w+)/}{$1/g;
+				$methods{$cur_method} .= "\t\$Result .= \$args->{$lookup};###TMOJO_LINE: $tag->{start_line}\n";
+			}
+			else {
+				die "malformed merge tag in $template_id on line $tag->{start_line}";
+			}			
+		}
 	}
 	
-	# PARSE EACH SECTION IN ORDER
+	# MAKE SURE OUR MODE IS COOL
+	if ($cur_method ne 'main') {
+		die "expected /METHOD tag";
+	}
+	
+	# NOW, WE CONSTRUCT THE ENTIRE PACKAGE
+	# --------------------------------------
+	
 	my $template_compiled = qq{###TMOJO_TEMPLATE_ID: $template_id
 package $package_name;
 
@@ -574,66 +972,10 @@ sub new {
 	return bless \$Self, \$_[0];
 }
 	};
-			
-	foreach my $section (keys %sections) {
-						
-		# SPLIT INTO LINES
-		my @lines = split /\n/, $sections{$section};
-		
-		# GET RID OF ANY TRAILING LINES THAT ARE ALL WHITESPACE
-		while ($lines[-1] =~ /^\d+:\s*$/) {
-			pop @lines;
-		}
-		
-		my $section_src;
-		my $stripped_beginning = 0;
-		
-		while (my $line = shift @lines) {
-			$line =~ s/^(\d+)://;
-			my $line_number = $1;
-			
-			if (@lines) {
-				$line .= "\n";
-			}
-			
-			unless ($stripped_beginning) {
-				$line =~ s/^\s+//;
-			}
-		
-			while ($line) {
-				$stripped_beginning = 1;
-			
-				if ($line =~ s/^(.*?)<://) {
-					my $dumper = Data::Dumper->new([$1]);
-					$dumper->Useqq(1);
-					$dumper->Indent(0);
-					$dumper->Terse(1);
-					my $literal = $dumper->Dump();
-					$section_src .= "\t\$Result .= $literal;###TMOJO_LINE: $line_number\n";
-					
-					if ($line =~ s/^\s*\$(\w+)\s*:>//) {
-						$section_src .= "\t\$Result .= \$args->{$1};###TMOJO_LINE: $line_number\n";
-					}
-					else {
-						die "malformed merge tag in $template_id on line $line_number";
-					}
-				}
-				else {
-					my $dumper = Data::Dumper->new([$line]);
-					$dumper->Useqq(1);
-					$dumper->Indent(0);
-					$dumper->Terse(1);
-					my $literal = $dumper->Dump();
-					$section_src .= "\t\$Result .= $literal;###TMOJO_LINE: $line_number\n";
-					
-					$line = '';
-				}
-			}
-		}
-		
-		# ADD THE FUNCTION TO THE PACKAGE
+	
+	foreach my $method (keys %methods) {
 		$template_compiled .= qq{
-sub $section {
+sub $method {
 	my \$Self = shift \@_;
 	
 	my \$args = \$Self->{args};
@@ -644,7 +986,7 @@ sub $section {
 	my \$Result = '';
 	
 	# --- BEGIN USER CODE ---
-	$section_src
+$methods{$method}
 	# --- END USER CODE ---
 	
 	return \$Result;
@@ -652,7 +994,6 @@ sub $section {
 		};
 	}
 	
-	# AND THE END
 	$template_compiled .= "\n1;\n";
 	
 	return $template_compiled;

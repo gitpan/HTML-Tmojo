@@ -208,16 +208,16 @@ Calling Tmojo Templates
     templates in the same template directory.
 
     Tmojo templates often refer to other Tmojo templates. For instance,
-    /group_1/my_template.tmojo may refer to
-    '/group_2/another_template.tmojo. It may do so in two possible ways.
-    First, it may use the absolute template id, like this:
+    /group_1/my_template.tmojo may refer to /group_1/another_template.tmojo.
+    It may do so in two possible ways. First, it may use the absolute
+    template id, like this:
 
       <: $Tmojo->call('/group_1/another_template.tmojo') :>
 
     Sometimes, however, it is more convenient when a template doesn't need
     to know exactly what directory it is in. In these cases,
     /group_1/my_template.tmojo could refer to
-    /group_2/another_template.tmojo using a relative template id, like this:
+    /group_1/another_template.tmojo using a relative template id, like this:
 
       <: $Tmojo->call('another_template.tmojo') :>
 
@@ -956,7 +956,7 @@ Copyright
     not use this file except in compliance with the License. You may obtain
     a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
     Tmojo(tm) is a trademark of Lab-01 LLC.
 

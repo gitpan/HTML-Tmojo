@@ -18,7 +18,7 @@
 
 package HTML::Tmojo;
 
-our $VERSION = '0.261';
+our $VERSION = '0.262';
 
 =head1 NAME
 

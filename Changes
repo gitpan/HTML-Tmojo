@@ -1,4 +1,15 @@
 ---
+version: 0.262
+date:    Mar 18, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- Fixed type-os in documentation
+	
+	- Updated non-existant test file so it will work...
+	ugh!
+
+---
 version: 0.261
 date:    Mar 16, 2004
 author:  Will Conant <will@lab-01.com>

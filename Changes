@@ -1,0 +1,173 @@
+---
+version: 0.261
+date:    Mar 16, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- Tmojo will report an error if you have a circular
+	@TMOJO_ISA reference (i.e. a template that is its
+	own parent)
+
+---
+version: 0.260
+date:    Mar 14, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- Abstracted the loading of templates into a TemplateLoader
+	class. This allows you to create your own TemplateLoader
+	that loads templates from someplace other than the disk
+	(like a database).
+	
+	- Added tmojo_lite... templates that can't contain any
+	Perl code (in case you don't trust your content providers)
+	
+	- moved Tmojo into the HTML:: nameespace
+	
+	- moved Tmojo::Engine.pm back to Tmojo.pm, so, now, the
+	module is HTML::Tmojo.pm
+
+---
+version: 0.251
+date:    Mar 11, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- Tmojo manually sets $/ (just in case someone else
+	in mod_perl land changed it.
+	
+	- Tmojo will report an error if you have a container
+	contained by itself (or any other circular reference)
+	
+	- we now support '../' at the beginning of template
+	ids, so you can back up directories. This is really
+	usefull for this: '../container.tmojo^' as the container
+	for a container.
+	
+	- fixed a bug where Tmojo would create a nasty file
+	in the cache directory when you tried to call a directory
+	as a template.
+
+---	
+version: 0.250
+date:    Mar 05, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+	
+	- added the ability to have tmojo code within perl
+	sections without breaking the world. Specifically,
+	you can now have a line that says <:method foo> in
+	a perl section without actually creating a method.
+	
+	- added <:escape> sections that allow arbitrary
+	tmojo code to pass through unevaluated.
+	
+	- both <:perl> and <:escape> sections support a user
+	defined terminator, like this <:escape-sample> that
+	allows </:perl> and </:escape> to appear within
+	<:perl> and <:escape> sections withou exiting the
+	section. Example
+	  
+	  <:escape-sample>
+		This is an example escape:
+		<:escape>
+			: print "hello";
+		</:escape>
+	  </:escape-sample>
+	  
+	This is especially useful when outputting Tmojo documentation.
+	In other words, it's a feature for me :)
+	
+	- Added <:capture> sections, which allow you to capture
+	the Tmojo output of a block without automatically dumping
+	that output to the $Result. Example:
+	
+	  <:capture my $captured>
+		This text will end up in the lexical
+		variable $captured and will not be
+		automatically dumped to $Result.
+	  </:capture>
+	
+	- Added <:filter> sections, which allow you to filter
+	sections of Tmojo output before they are added to
+	$Result. Example:
+	
+	  <:filter reverse($Result)>
+		This text will end up being backwards!
+	  </:filter>
+	
+	- Improved error checking for run-away sections and redeclared
+	methods.
+
+---
+version: 0.200
+date:    Mar 03, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- added relative template referencing. For example,
+	when a template refers to its container as
+	'container.tmojo', that now refers to the
+	'container.tmojo' in the same directory as the
+	template. To refer to the top-most 'container.tmojo',
+	prepend a '/' as in '/container.tmojo'.
+	
+	- added upward traversal in paths. For example, a
+	template may now refer to its container as
+	'container.tmojo^'. The up-carrot tells Tmojo to look
+	up the entire directory path in search of someting
+	named 'container.tmojo'. This also works with absolute
+	paths, so '/dir1/dir2/container.tmojo^' will cause
+	Tmojo to look first in '/dir1/dir2' then in '/dir1'
+	then simply in '/' for a template called
+	'container.tmojo'.
+	
+	- added suport for <:method> as an alternative to <:sub>
+	
+	- moved Lab01::Tmojo.pm to Lab01::Tmojo::Engine.pm
+	
+	It is important to note that when call_with_container
+	is used, the container id is relative to the location
+	of the called template. This is extremely useful,
+	because it allows you to say:
+	
+	$Tmojo->call_with_container('/some/template/here.tmojo', 'container.tmojo^')
+	
+	in order to establish a default container mechanism
+	(similar to the autohandler mechanism found in Mason)
+	
+---
+version: 0.101
+date:    Mar 01, 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+
+	- fixed bug where changes in parent template would not
+	be noticed until child template was changed or the
+	cache was flushed
+	
+	- fixed bug where line number comments where put in
+	perl blocks containing multi-line leterals. decided to
+	put line numbers in separate file from perl source.
+
+---
+version: 0.100
+date:    Feb 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+	- added call_with_container
+	- added prepare
+
+---
+version: 0.002
+date:    Jan 2004
+author:  Will Conant <will@lab-01.com>
+changes:
+	- added nice error messages
+
+---
+version: 0.001
+date:    Dec 2003
+author:  Will Conant <will@lab-01.com>
+changes:
+	- Initial Release
